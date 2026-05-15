@@ -1,0 +1,11 @@
+torch==2.6.0+cu124 --index-url https://download.pytorch.org/whl/cu124
+transformers==4.40.2
+accelerate==0.29.3
+datasets==2.19.0
+evaluate==0.4.1
+sacrebleu==2.4.0
+sentencepiece==0.2.0
+protobuf==3.20.3
+bert-score==0.3.13
+tiktoken==0.6.0
+tqdm

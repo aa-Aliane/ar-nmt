@@ -1,0 +1,50 @@
+# -----------------------------------------------------------------------------
+# Project-Specific 
+# -----------------------------------------------------------------------------
+# Logs and outputs
+logs/
+*.log
+results/
+
+# Downloaded, prepared data, and model checkpoints
+data/
+models/
+
+# -----------------------------------------------------------------------------
+# Python / PyTorch
+# -----------------------------------------------------------------------------
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# PyTorch/HuggingFace cache
+.cache/
+.huggingface/
+
+# Environment configurations
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# -----------------------------------------------------------------------------
+# OS / Editor 
+# -----------------------------------------------------------------------------
+# VS Code
+.vscode/
+
+# Neovim / Vim
+*.swp
+*~
+Session.vim
+
+# macOS / Linux
+.DS_Store
+.AppleDouble
+.LSOverride
+*~
+.directory

@@ -1,0 +1,10 @@
+pip:
+  - torch==2.6.0+cu124
+  - transformers==4.40.2   # pin this, 4.57.6 broke tokenizer
+  - accelerate==0.29.3
+  - unbabel-comet==2.2.1 --no-deps  # install comet WITHOUT touching anything else
+  - datasets==2.19.0
+  - evaluate==0.4.1
+  - sacrebleu==2.4.0
+  - sentencepiece==0.2.0
+  - protobuf==3.20.3

@@ -1,0 +1,21 @@
+name: multilang_eval
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pytorch
+  - pytorch-cuda=12.4
+  - pip
+  - pip:
+      - transformers
+      - accelerate
+      - datasets
+      - sacrebleu
+      - bert-score
+      - evaluate
+      - tiktoken
+      - protobuf
+      - sentencepiece
+      - -e .

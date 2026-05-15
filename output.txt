@@ -1,0 +1,5 @@
+Dataset({
+    features: ['translation'],
+    num_rows: 100
+})
+{'translation': [{'ar': 'لا أعلم ، لست متأكداً بهذا', 'en': "I don't know. I'm not really sure."}, {'ar': 'هذا ليس اختبار، إنه بث الطوارئ المباشر', 'en': 'This is not a test.'}, {'ar': 'اقتحم الآثم المركبات ومن ثم حركها فحسب لمسافة قصيرة', 'en': 'The perpetrator breaks into the vehicles and then just moves them a short distance.'}]}
