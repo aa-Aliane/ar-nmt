@@ -14,14 +14,15 @@ GRAD_ACCUM   ?= 8
 LR           ?= 2e-5
 MAX_SAMPLES_EVAL ?= 1500
 TRIM_SAMPLES ?= 1_000_000
-
+N_BOOT       ?= 1000
+GPU          ?= 0,1,2,3
 
 # Auto-detect latest fine-tuned model (most recent models/m2m100_finetuned_* dir)
 FINETUNED    ?= $(shell ls -dt models/m2m100_finetuned_* 2>/dev/null | head -1)
 
 # ──────────────────────────────────────────────
 
-.PHONY: trim prepare train eval eval-base compare full smoke clean
+.PHONY: trim prepare train eval eval-base compare full smoke clean check
 
 trim:
 	python trim_tokenizer.py \
@@ -52,22 +53,25 @@ train:
 
 ## Evaluate latest fine-tuned model
 eval:
-	@echo "🔍 Evaluating: $(FINETUNED)"
-	python test.py \
+	@echo "🔍 Evaluating: $(FINETUNED)  [GPU=$(GPU), n_boot=$(N_BOOT)]"
+	CUDA_VISIBLE_DEVICES=$(GPU) python test.py \
 		--model_path $(FINETUNED) \
 		--dataset $(PREPARED)/test \
 		--max_samples $(MAX_SAMPLES_EVAL) \
-		--batch_size $(BATCH_SIZE) 2>&1 | tee test.log
+		--batch_size $(BATCH_SIZE) \
+		--n_boot $(N_BOOT) \
+		--no_comet 2>&1 | tee test.log
 
 ## Evaluate base trimmed model
 eval-base:
-	@echo "🔍 Evaluating base: $(BASE_MODEL)"
-	python test.py \
+	@echo "🔍 Evaluating base: $(BASE_MODEL)  [GPU=$(GPU), n_boot=$(N_BOOT)]"
+	CUDA_VISIBLE_DEVICES=$(GPU) python test.py \
 		--model_path $(BASE_MODEL) \
 		--max_samples $(MAX_SAMPLES_EVAL) \
 		--dataset $(PREPARED)/test \
-		--batch_size $(BATCH_SIZE) 2>&1 | tee test.log
-
+		--batch_size $(BATCH_SIZE) \
+		--n_boot $(N_BOOT) \
+		--no_comet 2>&1 | tee test_base.log
 
 ## Run both and compare
 compare: eval-base eval
