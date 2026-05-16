@@ -9,6 +9,7 @@ Metrics
   - chrF++    (sacrebleu, word_order=2)
   - TER       (sacrebleu)
   - COMET     (Unbabel/wmt22-comet-da, requires GPU)
+  - 95% CI    (bootstrap resampling, 1000 iterations by default)
 
 Results are saved to results/<model_name>_<dataset>_<timestamp>.json
 """
@@ -22,8 +23,10 @@ from datetime import datetime
 from pathlib import Path
 
 import evaluate
+import numpy as np
 import torch
 from datasets import load_dataset
+from sacrebleu.metrics import BLEU, CHRF, TER
 from tqdm import tqdm
 
 from src.model_loader import load_nmt_model
@@ -61,6 +64,15 @@ def parse_args():
     parser.add_argument(
         "--tgt_lang", default="ar",
         help="Target language code for the model (default: ar).",
+    )
+    parser.add_argument(
+        "--n_boot", type=int, default=1000,
+        help="Bootstrap iterations for 95%% CI (0 = skip CI).",
+    )
+    parser.add_argument(
+        "--no_ci",
+        action="store_true",
+        help="Skip bootstrap confidence intervals.",
     )
     return parser.parse_args()
 
@@ -175,7 +187,7 @@ def compute_chrf(predictions, references) -> dict:
     result = metric.compute(
         predictions=predictions,
         references=references,
-        word_order=2,          # chrF++ (not plain chrF)
+        word_order=2,
         char_order=6,
     )
     return {"chrF++": round(result["score"], 4)}
@@ -208,7 +220,6 @@ def compute_comet(sources, predictions, references) -> dict:
     model_path = download_model(COMET_MODEL)
     comet_model = load_from_checkpoint(model_path)
 
-    # COMET expects flat reference strings, not lists
     flat_refs = [r[0] if isinstance(r, list) else r for r in references]
     data = [
         {"src": s, "mt": p, "ref": r}
@@ -218,6 +229,99 @@ def compute_comet(sources, predictions, references) -> dict:
     output = comet_model.predict(data, batch_size=16, gpus=1 if DEVICE == "cuda" else 0)
     mean_score = round(float(output.system_score), 4)
     return {"comet": mean_score}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Bootstrap confidence intervals
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _boot_sample(hypotheses, references, idx):
+    """Return a resampled (hyp, ref) pair given bootstrap indices."""
+    h = [hypotheses[i] for i in idx]
+    # references may be list-of-lists (sacrebleu format) or flat strings
+    r = [references[i] for i in idx]
+    return h, r
+
+
+def compute_bootstrap_ci(
+    hypotheses: list,
+    references: list,       # list of [str] (sacrebleu format)
+    sources:    list,
+    n_boot:     int = 1000,
+    alpha:      float = 0.05,
+    run_comet:  bool = False,
+) -> dict:
+    """
+    Bootstrap resampling (n_boot iterations) to estimate 95% CI for
+    BLEU, chrF++, TER, and optionally COMET.
+
+    Returns a dict shaped like:
+      {
+        "bleu":   {"mean": x, "ci_low": y, "ci_high": z},
+        "chrf":   {...},
+        "ter":    {...},
+        "comet":  {...},   # only if run_comet=True
+      }
+    """
+    n = len(hypotheses)
+    # flat refs for sacrebleu bootstrap (list-of-lists → list)
+    flat_refs = [r[0] if isinstance(r, list) else r for r in references]
+
+    bleu_m = BLEU(effective_order=True, tokenize="flores101")
+    chrf_m = CHRF(word_order=2)
+    ter_m  = TER()
+
+    bleu_scores, chrf_scores, ter_scores = [], [], []
+
+    print(f"\n  Bootstrap CI ({n_boot} iterations) …")
+    for _ in tqdm(range(n_boot), desc="Bootstrapping"):
+        idx = np.random.choice(n, n, replace=True)
+        h = [hypotheses[i] for i in idx]
+        r = [flat_refs[i]  for i in idx]
+
+        bleu_scores.append(bleu_m.corpus_score(h, [r]).score)
+        chrf_scores.append(chrf_m.corpus_score(h, [r]).score)
+        ter_scores.append(ter_m.corpus_score(h,  [r]).score)
+
+    def _ci(scores):
+        return {
+            "mean":    round(float(np.mean(scores)), 4),
+            "ci_low":  round(float(np.percentile(scores, 100 * alpha / 2)), 4),
+            "ci_high": round(float(np.percentile(scores, 100 * (1 - alpha / 2))), 4),
+        }
+
+    ci = {
+        "bleu": _ci(bleu_scores),
+        "chrf": _ci(chrf_scores),
+        "ter":  _ci(ter_scores),
+    }
+
+    if run_comet:
+        try:
+            from comet import download_model, load_from_checkpoint
+            print(f"  Loading COMET for bootstrap …")
+            comet_model = load_from_checkpoint(download_model(COMET_MODEL))
+            comet_scores = []
+
+            for _ in tqdm(range(n_boot), desc="COMET bootstrap"):
+                idx  = np.random.choice(n, n, replace=True)
+                data = [
+                    {"src": sources[i], "mt": hypotheses[i], "ref": flat_refs[i]}
+                    for i in idx
+                ]
+                result = comet_model.predict(
+                    data, batch_size=16, gpus=1 if DEVICE == "cuda" else 0
+                )
+                comet_scores.append(result.system_score)
+
+            ci["comet"] = _ci(comet_scores)
+
+        except ImportError:
+            print("  [!] COMET not installed — skipping COMET CI.")
+            ci["comet"] = None
+
+    return ci
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -231,7 +335,13 @@ def _slug(text: str) -> str:
     return re.sub(r"[^a-zA-Z0-9_\-]", "_", text).strip("_")
 
 
-def save_results(model_path: str, dataset_name: str, scores: dict, n_samples: int) -> Path:
+def save_results(
+    model_path: str,
+    dataset_name: str,
+    scores: dict,
+    n_samples: int,
+    confidence_intervals: dict | None = None,
+) -> Path:
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
     timestamp  = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -247,6 +357,7 @@ def save_results(model_path: str, dataset_name: str, scores: dict, n_samples: in
         "hostname":     socket.gethostname(),
         "device":       DEVICE,
         "scores":       scores,
+        "confidence_intervals": confidence_intervals,  # None if --no_ci
     }
 
     with open(out_path, "w", encoding="utf-8") as f:
@@ -274,8 +385,7 @@ def main():
     model, tokenizer = load_nmt_model(args.model_path, device=DEVICE)
     model.eval()
 
-
-    is_nllb = "facebook/nllb" in args.model_path.lower() or "facebook/nllb" in type(tokenizer).__name__.lower()
+    is_nllb  = "facebook/nllb" in args.model_path.lower() or "facebook/nllb" in type(tokenizer).__name__.lower()
     is_mbart = "mbart" in args.model_path.lower() or "mbart" in type(tokenizer).__name__.lower()
 
     NLLB_CODES  = {"en": "eng_Latn", "ar": "arb_Arab"}
@@ -288,15 +398,14 @@ def main():
         src_lang = MBART_CODES.get(args.src_lang, args.src_lang)
         tgt_lang = MBART_CODES.get(args.tgt_lang, args.tgt_lang)
     else:
-        src_lang = args.src_lang   
+        src_lang = args.src_lang
         tgt_lang = args.tgt_lang
 
     tokenizer.src_lang = src_lang
     tokenizer.tgt_lang = tgt_lang
 
-
     if hasattr(tokenizer, "get_lang_id"):
-        lang_id = tokenizer.get_lang_id(tgt_lang)          
+        lang_id = tokenizer.get_lang_id(tgt_lang)
     else:
         lang_id = tokenizer.convert_tokens_to_ids(tgt_lang)
 
@@ -323,16 +432,43 @@ def main():
     else:
         print("  Skipping COMET (--no_comet).")
 
+    # ── Bootstrap CI ──────────────────────────────────────────────────────────
+    confidence_intervals = None
+    if not args.no_ci and args.n_boot > 0:
+        confidence_intervals = compute_bootstrap_ci(
+            hypotheses=predictions,
+            references=references,
+            sources=sources,
+            n_boot=args.n_boot,
+            run_comet=not args.no_comet,
+        )
+
     # ── Print summary ─────────────────────────────────────────────────────────
-    print("\n" + "=" * 45)
+    print("\n" + "=" * 55)
     print("  EVALUATION RESULTS")
-    print("=" * 45)
+    print("=" * 55)
     for k, v in scores.items():
         print(f"  {k:<20} {v}")
-    print("=" * 45)
+
+    if confidence_intervals:
+        print("\n  95% CONFIDENCE INTERVALS  (bootstrap, n={})".format(args.n_boot))
+        print("  {:<8} {:>8}  {:>8}  {:>8}".format("Metric", "Mean", "CI low", "CI high"))
+        print("  " + "-" * 38)
+        labels = {"bleu": "BLEU ↑", "chrf": "chrF++ ↑", "ter": "TER ↓", "comet": "COMET ↑"}
+        for key, label in labels.items():
+            if key in confidence_intervals and confidence_intervals[key]:
+                c = confidence_intervals[key]
+                print(f"  {label:<10} {c['mean']:>8.4f}  {c['ci_low']:>8.4f}  {c['ci_high']:>8.4f}")
+
+    print("=" * 55)
 
     # ── Save ──────────────────────────────────────────────────────────────────
-    out_path = save_results(args.model_path, args.dataset, scores, len(ds))
+    out_path = save_results(
+        args.model_path,
+        args.dataset,
+        scores,
+        len(ds),
+    )
     print(f"\n  Results saved → {out_path}")
 
 
